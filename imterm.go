@@ -1,7 +1,6 @@
 package imterm
 
 import (
-	"log"
 	"strings"
 
 	"github.com/mitchellh/go-wordwrap"
@@ -484,7 +483,6 @@ func (it *Imterm) Input(w, h int, text string, label string) string {
 			default:
 
 			}
-			log.Printf("KeyPress: %x", it.curState.keyPress)
 		}
 	}
 	if state.cPos < 0 {
