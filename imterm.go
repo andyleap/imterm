@@ -168,6 +168,10 @@ type InputState struct {
 	chPress  rune
 }
 
+// Imterm is a simple immediate mode text ui library
+// Items are placed in a simple top down, left to right pattern
+// If an item's width is 0, it will resize to fill the remainder of the width
+// An item's ID must be unique, and by default is the label passed to the item.  This can be overriden by calling .ID() first.
 type Imterm struct {
 	screen Screen
 
@@ -204,6 +208,7 @@ func (it *Imterm) getState(id string, def interface{}) interface{} {
 	return def
 }
 
+// set info about mouse actions
 func (it *Imterm) Mouse(x, y int, button MouseButton) {
 	if it.mouseState != button {
 		it.nextState.mouseX = x
@@ -213,11 +218,13 @@ func (it *Imterm) Mouse(x, y int, button MouseButton) {
 	}
 }
 
+// Set info about keyboard presses.  Values are equivalent to termbox-go values
 func (it *Imterm) Keyboard(key Key, ch rune) {
 	it.nextState.keyPress = key
 	it.nextState.chPress = ch
 }
 
+// Simple check what mouse button was clicked in a region
 func (it *Imterm) CheckClick(x, y, w, h int) MouseButton {
 	if it.curState.mouseButton != 0 {
 		if it.curState.mouseX >= x && it.curState.mouseX < x+w &&
@@ -228,6 +235,7 @@ func (it *Imterm) CheckClick(x, y, w, h int) MouseButton {
 	return 0
 }
 
+// Was the last object focused?
 func (it *Imterm) Focus() bool {
 	return it.focusID == it.lastID
 }
@@ -236,10 +244,12 @@ func (it *Imterm) setLast(id string) {
 	it.lastID = id
 }
 
+// Set the focus to a specific ID
 func (it *Imterm) SetFocus(id string) {
 	it.focusID = id
 }
 
+// Override the next object to have the given ID
 func (it *Imterm) ID(id string) {
 	it.nextID = id
 }
@@ -321,6 +331,7 @@ func New(screen Screen) (*Imterm, error) {
 	return it, nil
 }
 
+// Start a frame, this must be called before drawing any objects to the screen
 func (it *Imterm) Start() {
 	it.TermW, it.TermH = it.screen.Size()
 	it.xPos, it.yPos = 0, 0
@@ -378,6 +389,7 @@ func (it *Imterm) frame(w, h int, label string, class string) {
 	}
 }
 
+// Place a text label.  Not editable
 func (it *Imterm) Text(w, h int, text string, label string) {
 	it.getID(label)
 	it.setLast(label)
@@ -410,6 +422,7 @@ type inputState struct {
 	cPos int
 }
 
+// Place an editable text area
 func (it *Imterm) Input(w, h int, text string, label string) string {
 	id := it.getID(label)
 	it.setLast(label)
@@ -539,6 +552,7 @@ func (it *Imterm) Input(w, h int, text string, label string) string {
 	return text
 }
 
+// Place a clickable button
 func (it *Imterm) Button(w, h int, label string) bool {
 	id := it.getID(label)
 	it.setLast(label)
@@ -578,6 +592,7 @@ type toggleState struct {
 	status bool
 }
 
+// Place a toggleable button
 func (it *Imterm) Toggle(w, h int, label string) bool {
 	id := it.getID(label)
 	it.setLast(label)
@@ -624,6 +639,7 @@ func (it *Imterm) Toggle(w, h int, label string) bool {
 	return state.status
 }
 
+// Place a gauge, percent is a float from 0-1
 func (it *Imterm) Gauge(w, h int, label string, percent float32, overlay string) {
 	it.getID(label)
 	it.setLast(label)
@@ -657,6 +673,7 @@ type listState struct {
 	scroll int
 }
 
+// Place a list area, user can scroll if there are too many items
 func (it *Imterm) List(w, h int, label string, contents []string) {
 	it.getID(label)
 	it.setLast(label)
@@ -706,6 +723,7 @@ type selectableListState struct {
 	selected []int
 }
 
+// Place a selectable list.  User can scroll, and returns a slice of ints of which indexes are selected.
 func (it *Imterm) SelectableList(w, h int, label string, contents []string) []int {
 	id := it.getID(label)
 	it.setLast(label)
@@ -781,6 +799,7 @@ func (it *Imterm) SelectableList(w, h int, label string, contents []string) []in
 	return state.selected
 }
 
+// Positions the next item to the right of the prior item
 func (it *Imterm) SameLine() {
 	if it.nextY < it.yPos {
 		it.nextY = it.yPos
@@ -789,6 +808,7 @@ func (it *Imterm) SameLine() {
 	it.xPos = it.nextX
 }
 
+// Finishes and renders the frame
 func (it *Imterm) Finish() {
 	it.screen.Flip()
 }
