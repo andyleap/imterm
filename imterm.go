@@ -190,6 +190,13 @@ type Imterm struct {
 	nextX int
 	nextY int
 
+	columnStack []struct{ x, y, maxy, w int }
+
+	columnWidth int
+	columnX     int
+	columnY     int
+	columnMaxY  int
+
 	TermW int
 	TermH int
 
@@ -197,6 +204,12 @@ type Imterm struct {
 	styleStack []StyleAttr
 
 	widgetState map[string]interface{}
+}
+
+func (it *Imterm) ClearState() {
+	for k := range it.widgetState {
+		delete(it.widgetState, k)
+	}
 }
 
 func (it *Imterm) getState(id string, def interface{}) interface{} {
@@ -209,7 +222,7 @@ func (it *Imterm) getState(id string, def interface{}) interface{} {
 
 // set info about mouse actions
 func (it *Imterm) Mouse(x, y int, button MouseButton) {
-	if it.mouseState != button {
+	if it.mouseState != button || button == MouseWheelUp || button == MouseWheelDown {
 		it.nextState.mouseX = x
 		it.nextState.mouseY = y
 		it.nextState.mouseButton = button
@@ -231,7 +244,7 @@ func (it *Imterm) CheckClick(x, y, w, h int) MouseButton {
 			return it.curState.mouseButton
 		}
 	}
-	return 0
+	return MouseNone
 }
 
 // Was the last object focused?
@@ -249,8 +262,9 @@ func (it *Imterm) SetFocus(id string) {
 }
 
 // Override the next object to have the given ID
-func (it *Imterm) ID(id string) {
+func (it *Imterm) ID(id string) *Imterm {
 	it.nextID = id
+	return it
 }
 
 func (it *Imterm) getID(id string) (ret string) {
@@ -260,6 +274,54 @@ func (it *Imterm) getID(id string) (ret string) {
 	}
 	ret = id
 	return
+}
+
+type Box struct {
+	x, y, w, h int
+}
+
+func (it *Imterm) getBox(w, h int) (b Box) {
+	if w <= 0 {
+		w = ((it.columnX + it.columnWidth) - it.xPos) + w
+	}
+	if h <= 0 {
+		h = (it.TermH - it.yPos) + h
+	}
+	b = Box{it.xPos, it.yPos, w, h}
+	it.nextX = it.xPos + w
+	it.lastY = it.yPos
+	it.xPos, it.yPos = it.columnX, it.yPos+h
+	if it.yPos < it.nextY {
+		it.yPos = it.nextY
+	}
+	if it.columnMaxY < it.yPos {
+		it.columnMaxY = it.yPos
+	}
+	return
+}
+
+func (it *Imterm) StartColumns(w int) {
+	it.columnStack = append(it.columnStack, struct{ x, y, maxy, w int }{it.columnX, it.columnY, it.columnMaxY, it.columnWidth})
+	it.columnY = it.yPos
+	it.columnWidth = w
+}
+
+func (it *Imterm) NextColumn(w int) {
+	it.columnX = it.columnX + it.columnWidth
+	if w == 0 {
+		w = it.columnStack[len(it.columnStack)-1].w - it.columnX
+	}
+	it.columnWidth = w
+	it.yPos = it.columnY
+	it.xPos = it.columnX
+	it.nextY = it.yPos
+}
+
+func (it *Imterm) FinishColumns() {
+	it.yPos = it.columnMaxY
+	it.columnX, it.columnY, it.columnMaxY, it.columnWidth = it.columnStack[len(it.columnStack)-1].x, it.columnStack[len(it.columnStack)-1].y, it.columnStack[len(it.columnStack)-1].maxy, it.columnStack[len(it.columnStack)-1].w
+	it.columnStack = it.columnStack[:len(it.columnStack)-1]
+	it.xPos = it.columnX
 }
 
 func (it *Imterm) GetBaseStyle(name string) Style {
@@ -303,16 +365,24 @@ func (it *Imterm) GetStyle(name string) CalcedStyle {
 	val := it.GetBaseStyle(name)
 	for _, s := range it.styleStack {
 		if s.Name == name || strings.HasSuffix(s.Name, "."+name) {
-			val = val.Merge(s.Value)
+			val = s.Value.Merge(val)
 		}
 		if it.Focus() && (s.Name == name+":focus" || strings.HasSuffix(s.Name, "."+name+":focus")) {
-			val = val.Merge(s.Value)
+			val = s.Value.Merge(val)
 		}
 	}
 	return CalcedStyle{
 		Fg: val.FgColor | val.FgStyle,
 		Bg: val.BgColor | val.BgStyle,
 	}
+}
+
+func (it *Imterm) PushStyle(name string, style Style) {
+	it.styleStack = append(it.styleStack, StyleAttr{name, style})
+}
+
+func (it *Imterm) PopStyles(num int) {
+	it.styleStack = it.styleStack[:len(it.styleStack)-num]
 }
 
 func New(screen Screen) (*Imterm, error) {
@@ -338,6 +408,11 @@ func (it *Imterm) Start() {
 	it.screen.Clear(it.GetStyle("").Bg)
 	it.curState = it.nextState
 	it.nextState = InputState{}
+
+	it.columnX, it.columnY = 0, 0
+	it.columnMaxY = 0
+	it.columnWidth = it.TermW
+	it.columnStack = it.columnStack[:0]
 }
 
 func (it *Imterm) hLine(x, y int, w int, s CalcedStyle) {
@@ -352,12 +427,9 @@ func (it *Imterm) vLine(x, y int, h int, s CalcedStyle) {
 	}
 }
 
-func (it *Imterm) frame(w, h int, label string, class string) {
+func (it *Imterm) frame(b Box, label string, class string) {
 	s := it.GetStyle(class)
-	if w == 0 {
-		w = it.TermW - it.xPos
-	}
-	x, y := it.xPos, it.yPos
+	x, y, w, h := b.x, b.y, b.w, b.h
 
 	it.hLine(x+1, y, w-3, s)
 	it.hLine(x+1, y+h-1, w-3, s)
@@ -379,40 +451,59 @@ func (it *Imterm) frame(w, h int, label string, class string) {
 		}
 		it.screen.SetCell(x+i+2, y, '►', s.Fg, s.Bg)
 	}
-	it.lastY = y
-	it.nextX = x + w
-	it.xPos = 0
-	it.yPos = y + h
-	if it.yPos < it.nextY {
-		it.yPos = it.nextY
-	}
+}
+
+type textState struct {
+	scroll int
 }
 
 // Place a text label.  Not editable
-func (it *Imterm) Text(w, h int, text string, label string) {
-	it.getID(label)
-	it.setLast(label)
-	if w == 0 {
-		w = it.TermW - it.xPos
-	}
-	x, y := it.xPos, it.yPos
+func (it *Imterm) Text(w, h int, label string, text string) {
+	id := it.getID(label)
+	it.setLast(id)
+	b := it.getBox(w, h)
 
-	it.frame(w, h, label, "text.border")
+	it.frame(b, label, "text.border")
 
 	s := it.GetStyle("text.text")
 
-	wrapped := wordwrap.WrapString(text, uint(w-2))
-	cx, cy := x+1, y+1
+	state := it.getState(id, &textState{}).(*textState)
 
+	it.screen.SetCell(b.x+b.w-1, b.y+1, '▲', s.Fg, s.Bg)
+	if state.scroll > 0 {
+		if it.CheckClick(b.x+b.w-1, b.y+1, 1, 1) == MouseLeft {
+			state.scroll--
+		}
+		if it.CheckClick(b.x, b.y, b.w, b.h) == MouseWheelUp {
+			state.scroll--
+		}
+	}
+
+	wrapped := wordwrap.WrapString(text, uint(b.w-2))
+	cx, cy := 0, 0
+
+	more := false
 	for _, r := range wrapped {
 		if r == '\n' {
-			cx, cy = x+1, cy+1
-			if cy >= y+h {
+			cx, cy = 0, cy+1
+			if cy-state.scroll >= b.h-2 {
+				more = true
 				break
 			}
 		} else {
-			it.screen.SetCell(cx, cy, r, s.Fg, s.Bg)
+			if cy-state.scroll >= 0 {
+				it.screen.SetCell(b.x+1+cx, b.y+1+cy-state.scroll, r, s.Fg, s.Bg)
+			}
 			cx++
+		}
+	}
+	it.screen.SetCell(b.x+b.w-1, b.y+b.h-2, '▼', s.Fg, s.Bg)
+	if more {
+		if it.CheckClick(b.x+b.w-1, b.y+b.h-2, 1, 1) == MouseLeft {
+			state.scroll++
+		}
+		if it.CheckClick(b.x, b.y, b.w, b.h) == MouseWheelDown {
+			state.scroll++
 		}
 	}
 }
@@ -422,13 +513,11 @@ type inputState struct {
 }
 
 // Place an editable text area
-func (it *Imterm) Input(w, h int, text string, label string) string {
+func (it *Imterm) Input(w, h int, label string, text string) string {
 	id := it.getID(label)
-	it.setLast(label)
-	if w == 0 {
-		w = it.TermW - it.xPos
-	}
-	x, y := it.xPos, it.yPos
+	it.setLast(id)
+	b := it.getBox(w, h)
+	x, y, w, h := b.x, b.y, b.w, b.h
 
 	state := it.getState(id, &inputState{cPos: -1}).(*inputState)
 	mx, my := -1, -1
@@ -492,7 +581,7 @@ func (it *Imterm) Input(w, h int, text string, label string) string {
 		state.cPos = len(text)
 	}
 
-	it.frame(w, h, label, "input.border")
+	it.frame(b, label, "input.border")
 
 	s := it.GetStyle("input.text")
 
@@ -505,6 +594,10 @@ func (it *Imterm) Input(w, h int, text string, label string) string {
 	cursor := false
 	nextspace := 0
 	for i, r := range text {
+		if mx >= 0 && cx == mx && cy == my {
+			state.cPos = i
+			mx = -1
+		}
 		if r == '\n' {
 			if i == state.cPos && showcursor {
 				it.screen.SetCell(cx+x+1, cy+y+1, ' ', s.Fg|AttrUnderline, s.Bg|AttrUnderline)
@@ -512,6 +605,10 @@ func (it *Imterm) Input(w, h int, text string, label string) string {
 			}
 
 			cx, cy = 0, cy+1
+			if mx >= 0 && cy > my {
+				state.cPos = i
+				mx = -1
+			}
 			if cy >= h-2 {
 				break
 			}
@@ -523,6 +620,10 @@ func (it *Imterm) Input(w, h int, text string, label string) string {
 				}
 				if nextspace > (w-2)-cx {
 					cx, cy = 0, cy+1
+					if mx >= 0 && cy > my {
+						state.cPos = i
+						mx = -1
+					}
 					if cy >= h-2 {
 						break
 					}
@@ -544,6 +645,10 @@ func (it *Imterm) Input(w, h int, text string, label string) string {
 			cx++
 		}
 	}
+	if mx >= 0 {
+		state.cPos = len(text)
+		mx = -1
+	}
 	if !cursor && cy < h-2 && showcursor {
 		it.screen.SetCell(cx+x+1, cy+y+1, ' ', s.Fg|AttrUnderline, s.Bg|AttrUnderline)
 	}
@@ -553,11 +658,9 @@ func (it *Imterm) Input(w, h int, text string, label string) string {
 // Place a clickable button
 func (it *Imterm) Button(w, h int, label string) bool {
 	id := it.getID(label)
-	it.setLast(label)
-	if w == 0 {
-		w = it.TermW - it.xPos
-	}
-	x, y := it.xPos, it.yPos
+	it.setLast(id)
+	b := it.getBox(w, h)
+	x, y, w, h := b.x, b.y, b.w, b.h
 
 	click := false
 
@@ -566,7 +669,7 @@ func (it *Imterm) Button(w, h int, label string) bool {
 		click = true
 	}
 
-	it.frame(w, h, "", "button.border")
+	it.frame(b, "", "button.border")
 	s := it.GetStyle("button.text")
 	wrapped := wordwrap.WrapString(label, uint(w-2))
 	cx, cy := x+1, y+1
@@ -586,18 +689,12 @@ func (it *Imterm) Button(w, h int, label string) bool {
 	return click
 }
 
-type toggleState struct {
-	status bool
-}
-
 // Place a toggleable button
-func (it *Imterm) Toggle(w, h int, label string) bool {
+func (it *Imterm) Toggle(w, h int, label string, state bool) bool {
 	id := it.getID(label)
-	it.setLast(label)
-	if w == 0 {
-		w = it.TermW - it.xPos
-	}
-	x, y := it.xPos, it.yPos
+	it.setLast(id)
+	b := it.getBox(w, h)
+	x, y, w, h := b.x, b.y, b.w, b.h
 
 	click := false
 
@@ -606,18 +703,16 @@ func (it *Imterm) Toggle(w, h int, label string) bool {
 		click = true
 	}
 
-	state := it.getState(id, &toggleState{}).(*toggleState)
-
 	if click {
-		state.status = !state.status
+		state = !state
 	}
 
 	class := "toggle"
-	if state.status {
+	if state {
 		class += ".active"
 	}
 
-	it.frame(w, h, "", class+".border")
+	it.frame(b, "", class+".border")
 	s := it.GetStyle(class + ".text")
 	wrapped := wordwrap.WrapString(label, uint(w-2))
 	cx, cy := x+1, y+1
@@ -634,21 +729,19 @@ func (it *Imterm) Toggle(w, h int, label string) bool {
 		}
 	}
 
-	return state.status
+	return state
 }
 
 // Place a gauge, percent is a float from 0-1
 func (it *Imterm) Gauge(w, h int, label string, percent float32, overlay string) {
-	it.getID(label)
-	it.setLast(label)
-	if w == 0 {
-		w = it.TermW - it.xPos
-	}
-	x, y := it.xPos, it.yPos
+	id := it.getID(label)
+	it.setLast(id)
+	b := it.getBox(w, h)
+	x, y, w, h := b.x, b.y, b.w, b.h
 
 	overlaywidth := len(overlay)
 
-	it.frame(w, h, label, "gauge.border")
+	it.frame(b, label, "gauge.border")
 	s := it.GetStyle("gauge.bar.on")
 	wasactive := true
 	for cx := 0; cx < w-2; cx++ {
@@ -673,14 +766,12 @@ type listState struct {
 
 // Place a list area, user can scroll if there are too many items
 func (it *Imterm) List(w, h int, label string, contents []string) {
-	it.getID(label)
-	it.setLast(label)
-	if w == 0 {
-		w = it.TermW - it.xPos
-	}
-	x, y := it.xPos, it.yPos
+	id := it.getID(label)
+	it.setLast(id)
+	b := it.getBox(w, h)
+	x, y, w, h := b.x, b.y, b.w, b.h
 
-	it.frame(w, h, label, "list.border")
+	it.frame(b, label, "list.border")
 
 	s := it.GetStyle("list.items")
 
@@ -717,24 +808,21 @@ func (it *Imterm) List(w, h int, label string, contents []string) {
 }
 
 type selectableListState struct {
-	scroll   int
-	selected []int
+	scroll int
 }
 
 // Place a selectable list.  User can scroll, and returns a slice of ints of which indexes are selected.
-func (it *Imterm) SelectableList(w, h int, label string, contents []string) []int {
+func (it *Imterm) SelectableList(w, h int, label string, contents []string, selected []int) []int {
 	id := it.getID(label)
-	it.setLast(label)
-	if w == 0 {
-		w = it.TermW - it.xPos
-	}
-	x, y := it.xPos, it.yPos
+	it.setLast(id)
+	b := it.getBox(w, h)
+	x, y, w, h := b.x, b.y, b.w, b.h
 
 	if it.CheckClick(x, y, w, h) == MouseLeft {
 		it.SetFocus(id)
 	}
 
-	it.frame(w, h, label, "list.border")
+	it.frame(b, label, "list.border")
 
 	s := it.GetStyle("list.items")
 
@@ -760,41 +848,41 @@ func (it *Imterm) SelectableList(w, h int, label string, contents []string) []in
 		if cy+state.scroll >= len(contents) {
 			break
 		}
-		selected := false
+		iselected := false
 		selindex := 0
-		for i, v := range state.selected {
+		for i, v := range selected {
 			if v == cy+state.scroll {
-				selected = true
+				iselected = true
 				selindex = i
 				break
 			}
 		}
 		if it.CheckClick(x+1, y+cy+1, w-2, 1) == MouseLeft {
-			if selected {
-				state.selected = append(state.selected[:selindex], state.selected[selindex+1:]...)
+			if iselected {
+				selected = append(selected[:selindex], selected[selindex+1:]...)
 			} else {
-				state.selected = append(state.selected, cy+state.scroll)
+				selected = append(selected, cy+state.scroll)
 			}
-			selected = !selected
+			iselected = !iselected
 		}
 		for _, ch := range contents[cy+state.scroll] {
-			if cx > w-2 {
+			if cx >= w-2 {
 				break
 			}
-			if !selected {
+			if !iselected {
 				it.screen.SetCell(cx+x+1, cy+y+1, ch, s.Fg, s.Bg)
 			} else {
 				it.screen.SetCell(cx+x+1, cy+y+1, ch, s.Fg|AttrReverse, s.Bg|AttrReverse)
 			}
 			cx++
 		}
-		if selected {
+		if iselected {
 			for ; cx < w-2; cx++ {
 				it.screen.SetCell(cx+x+1, cy+y+1, ' ', s.Fg|AttrReverse, s.Bg|AttrReverse)
 			}
 		}
 	}
-	return state.selected
+	return selected
 }
 
 // Positions the next item to the right of the prior item
