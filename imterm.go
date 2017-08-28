@@ -204,6 +204,8 @@ type Imterm struct {
 	styleStack []StyleAttr
 
 	widgetState map[string]interface{}
+
+	lastBox Box
 }
 
 func (it *Imterm) ClearState() {
@@ -247,6 +249,16 @@ func (it *Imterm) CheckClick(x, y, w, h int) MouseButton {
 	return MouseNone
 }
 
+func (it *Imterm) GetClick(x, y, w, h int) (mx, my int, mb MouseButton) {
+	if it.curState.mouseButton != 0 {
+		if it.curState.mouseX >= x && it.curState.mouseX < x+w &&
+			it.curState.mouseY >= y && it.curState.mouseY < y+h {
+			return it.curState.mouseX - x, it.curState.mouseY - y, it.curState.mouseButton
+		}
+	}
+	return 0, 0, MouseNone
+}
+
 // Was the last object focused?
 func (it *Imterm) Focus() bool {
 	return it.focusID == it.lastID
@@ -288,6 +300,7 @@ func (it *Imterm) getBox(w, h int) (b Box) {
 		h = (it.TermH - it.yPos) + h
 	}
 	b = Box{it.xPos, it.yPos, w, h}
+	it.lastBox = b
 	it.nextX = it.xPos + w
 	it.lastY = it.yPos
 	it.xPos, it.yPos = it.columnX, it.yPos+h
@@ -457,6 +470,10 @@ type textState struct {
 	scroll int
 }
 
+func (it *Imterm) GetLast() (x, y, w, h int) {
+	return it.lastBox.x, it.lastBox.y, it.lastBox.w, it.lastBox.h
+}
+
 // Place a text label.  Not editable
 func (it *Imterm) Text(w, h int, label string, text string) {
 	id := it.getID(label)
@@ -506,6 +523,84 @@ func (it *Imterm) Text(w, h int, label string, text string) {
 			state.scroll++
 		}
 	}
+}
+
+type Cell struct {
+	Char   rune
+	Fg, Bg Attribute
+}
+
+type bufferState struct {
+	xscroll, yscroll int
+}
+
+// Place a buffer.  Not editable, but responds to click events.  Expects buffer to be uniform in size for all rows.
+func (it *Imterm) Buffer(w, h int, label string, buffer [][]Cell) (mx, my int, mb MouseButton) {
+	id := it.getID(label)
+	it.setLast(id)
+	b := it.getBox(w, h)
+
+	it.frame(b, label, "text.border")
+
+	s := it.GetStyle("text.text")
+
+	state := it.getState(id, &bufferState{}).(*bufferState)
+	it.screen.SetCell(b.x+b.w-1, b.y+1, '▲', s.Fg, s.Bg)
+	if state.yscroll > 0 {
+		if it.CheckClick(b.x+b.w-1, b.y+1, 1, 1) == MouseLeft {
+			state.yscroll--
+		}
+		if it.CheckClick(b.x, b.y, b.w, b.h) == MouseWheelUp {
+			state.yscroll--
+		}
+	}
+	it.screen.SetCell(b.x+b.w-1, b.y+b.h-2, '▼', s.Fg, s.Bg)
+	if state.yscroll+b.h-2 < len(buffer) {
+		if it.CheckClick(b.x+b.w-1, b.y+b.h-2, 1, 1) == MouseLeft {
+			state.yscroll++
+		}
+		if it.CheckClick(b.x, b.y, b.w, b.h) == MouseWheelDown {
+			state.yscroll++
+		}
+	} else if state.yscroll+b.h-2 > len(buffer) {
+		state.yscroll = len(buffer) - b.h - 2
+		if state.yscroll < 0 {
+			state.yscroll = 0
+		}
+	}
+
+	it.screen.SetCell(b.x+1, b.y+b.h-1, '◄', s.Fg, s.Bg)
+	if state.xscroll > 0 {
+		if it.CheckClick(b.x+1, b.y+b.h-1, 1, 1) == MouseLeft {
+			state.xscroll--
+		}
+	}
+	it.screen.SetCell(b.x+b.w-2, b.y+b.h-1, '►', s.Fg, s.Bg)
+	if state.xscroll+b.w-2 < len(buffer[0]) {
+		if it.CheckClick(b.x+b.w-2, b.y+b.h-1, 1, 1) == MouseLeft {
+			state.xscroll++
+		}
+	} else if state.xscroll+b.w-2 > len(buffer[0]) {
+		state.xscroll = len(buffer[0]) - b.w - 2
+		if state.xscroll < 0 {
+			state.xscroll = 0
+		}
+	}
+
+	for cy := 0; cy < b.h-2; cy++ {
+		if cy+state.yscroll >= len(buffer) {
+			break
+		}
+		row := buffer[cy+state.yscroll]
+		for cx := 0; cx < b.w-2; cx++ {
+			if cx+state.xscroll >= len(row) {
+				break
+			}
+			cell := row[cx+state.xscroll]
+			it.screen.SetCell(b.x+1+cx, b.y+1+cy, cell.Char, cell.Fg, cell.Bg)
+		}
+	}
+	return it.GetClick(b.x+1, b.y+1, b.w-2, b.h-2)
 }
 
 type inputState struct {
