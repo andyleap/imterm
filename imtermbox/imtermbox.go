@@ -1,7 +1,7 @@
 package imtermbox
 
 import (
-	"ScanSrv/imterm"
+	"github.com/andyleap/imterm"
 
 	tb "github.com/nsf/termbox-go"
 )
